@@ -78,6 +78,7 @@
 
       # Update flake inputs daily
       nix flake update --flake "$FLAKE" 2>&1
+      chown -R ${secrets.username}:staff "$FLAKE"
       echo "=== flake update finished at $(date) ==="
 
       # Run rebuild in a way that survives the daemon being reloaded mid-switch
