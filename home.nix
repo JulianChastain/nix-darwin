@@ -32,6 +32,10 @@
       export EDITOR=nvim
       export BUN_INSTALL="$HOME/.bun"
       export PATH="$BUN_INSTALL/bin:$PATH"
+      export IDLEUSERDIR="$HOME/.config/idlerc"
+      export AWS_CONFIG_FILE="$HOME/.config/aws/config"
+      export AWS_SHARED_CREDENTIALS_FILE="$HOME/.config/aws/credentials"
+      export AZURE_CONFIG_DIR="$HOME/.config/azure"
     '';
 
     shellAliases = {
