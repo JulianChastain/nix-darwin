@@ -11,7 +11,6 @@
     };
 
     taps = [
-      "anomalyco/tap"
       "snyk/tap"
     ];
 
