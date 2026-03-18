@@ -320,7 +320,7 @@ ${lib.concatMapStringsSep "\n" (ws:
 
       echo "$story_json" | python3 -c "
       import json, sys
-      wi_base = '${"'"}''${WI_BASE}${"'"}'
+      wi_base = ${"'"}''${WI_BASE}${"'"}
       rows = json.load(sys.stdin)
       if not rows:
           print('  No active work items.')
@@ -396,7 +396,7 @@ ${lib.concatMapStringsSep "\n" (ws:
       else
           echo "$pr_json" | python3 -c "
       import json, sys
-      wi_base = '${"'"}''${WI_BASE}${"'"}'
+      wi_base = ${"'"}''${WI_BASE}${"'"}
       rows = json.load(sys.stdin)
       hdr = f\"{'ID':<8}{'Role':<11}{'Created':<13}{'Creator':<25}{'Repository':<20}{'Story':<10}{'Title'}\"
       print(hdr)
