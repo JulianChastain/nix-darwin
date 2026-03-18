@@ -38,7 +38,6 @@
     casks = [
       "anki"
       "bitwarden"
-      "claude-code"
       "copilot-cli"
       "cursor"
       "docker-desktop"
@@ -51,7 +50,6 @@
       "powershell"
       "visual-studio-code"
       "wezterm"
-      "zed"
     ];
   };
 
