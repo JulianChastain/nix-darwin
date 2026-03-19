@@ -34,6 +34,8 @@ in {
     TS_NODE_HISTORY = "$HOME/.local/state/ts-node/repl_history";
     HISTFILE = "$HOME/.local/state/zsh/history";
     ZSH_COMPDUMP = "$HOME/.cache/zsh/zcompdump-$HOST-$ZSH_VERSION";
+    # Managed as plain files under ~/.config/git/ (see migrateHomeClutter). programs.git is left off so HM does not overwrite them.
+    GIT_CONFIG_GLOBAL = "${config.xdg.configHome}/git/config";
   };
 
   home.activation.migrateHomeClutter = lib.hm.dag.entryAfter [ "writeBoundary" ] ''
@@ -57,19 +59,33 @@ in {
       fi
     }
 
+    # Merge legacy top-level dirs into XDG targets (skip names that already exist in dst), then remove src.
+    merge_dir_into() {
+      local src="$1"
+      local dst="$2"
+      [ -d "$src" ] || return 0
+      mkdir -p "$dst"
+      ${pkgs.rsync}/bin/rsync -a --ignore-existing "$src/" "$dst/"
+      rm -rf "$src"
+    }
+
+    merge_dir_into "$HOME/.aws" "$HOME/.config/aws"
+    merge_dir_into "$HOME/.azure" "$HOME/.config/azure"
+    merge_dir_into "$HOME/.docker" "$HOME/.config/docker"
+    merge_dir_into "$HOME/.npm" "$HOME/.cache/npm"
+
     move_dir_if_absent "$HOME/.idlerc" "$HOME/.config/idlerc"
-    move_dir_if_absent "$HOME/.azure" "$HOME/.config/azure"
-    move_dir_if_absent "$HOME/.docker" "$HOME/.config/docker"
-    move_dir_if_absent "$HOME/.npm" "$HOME/.cache/npm"
 
     mkdir -p \
       "$HOME/.config/aws" \
+      "$HOME/.config/git" \
       "$HOME/.config/npm" \
       "$HOME/.config/azure" \
       "$HOME/.config/docker" \
       "$HOME/.config/idlerc" \
       "$HOME/.cache/npm" \
       "$HOME/.cache/zsh" \
+      "$HOME/.cache/oh-my-zsh" \
       "$HOME/.local/state/less" \
       "$HOME/.local/state/node" \
       "$HOME/.local/state/python" \
@@ -86,6 +102,20 @@ in {
     move_file_if_absent "$HOME/.ts_node_repl_history" "$HOME/.local/state/ts-node/repl_history"
     move_file_if_absent "$HOME/.zsh_history" "$HOME/.local/state/zsh/history"
 
+    move_file_if_absent "$HOME/.gitconfig-ecosystem" "$HOME/.config/git/gitconfig-ecosystem"
+    move_file_if_absent "$HOME/.gitconfig" "$HOME/.config/git/config"
+    if [ -f "$HOME/.config/git/config" ]; then
+      ${pkgs.gnused}/bin/sed -i.bak \
+        's|path = ~/.gitconfig-ecosystem|path = gitconfig-ecosystem|g' \
+        "$HOME/.config/git/config" 2>/dev/null || true
+      rm -f "$HOME/.config/git/config.bak"
+    fi
+
+    # HM uses nixpkgs oh-my-zsh (see ~/.config/zsh/.zshenv); this tree is obsolete.
+    rm -rf "$HOME/.oh-my-zsh"
+
+    # Not auto-migrated (no reliable XDG env): ~/.azure-devops ~/.gemini ~/.varlock — remove manually if unused.
+
     if [ -L "$HOME/bin/begin" ]; then
       rm -f "$HOME/bin/begin"
     fi
@@ -100,6 +130,7 @@ in {
     nodejs
     typescript
     eza
+    ripgrep
     nerd-fonts.jetbrains-mono
   ];
 
