@@ -1,0 +1,55 @@
+#!/usr/bin/env bash
+# Open Neovim to compose a prompt, run Cursor agent headlessly, then (in a git
+# repo) stage all changes and commit using the agent's printed output as the
+# message.
+set -euo pipefail
+
+if ! command -v nvim >/dev/null 2>&1; then
+  echo "nvim not found in PATH" >&2
+  exit 1
+fi
+if ! command -v agent >/dev/null 2>&1; then
+  echo "agent not found in PATH" >&2
+  exit 1
+fi
+
+prompt_file=$(mktemp -t agent_prompt.XXXXXX)
+agent_out=$(mktemp -t agent_out.XXXXXX)
+cleanup() {
+  rm -f "$prompt_file" "$agent_out"
+}
+trap cleanup EXIT
+
+if ! nvim "$prompt_file"; then
+  echo "Neovim exited with an error; not running agent." >&2
+  exit 1
+fi
+
+prompt=$(cat "$prompt_file")
+if [[ -z "${prompt//[$' \t\r\n']/}" ]]; then
+  echo "Prompt is empty; not running agent." >&2
+  exit 1
+fi
+
+set -o pipefail
+# Commit message uses printed agent response (stdout); stderr still goes to the terminal.
+agent --yolo --trust --print -- "$prompt" | tee "$agent_out"
+agent_status=${PIPESTATUS[0]}
+
+if [[ "$agent_status" -ne 0 ]]; then
+  exit "$agent_status"
+fi
+
+msg=$(cat "$agent_out")
+if [[ -z "${msg//[$' \t\r\n']/}" ]]; then
+  msg="agent: completed (no printed output)"
+fi
+
+if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  git add -A
+  if git diff --cached --quiet && git diff --quiet; then
+    echo "No changes to commit." >&2
+  else
+    printf '%s\n' "$msg" | git commit -F -
+  fi
+fi

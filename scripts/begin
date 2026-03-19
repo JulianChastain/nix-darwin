@@ -1,0 +1,189 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+bold="\033[1m"
+dim="\033[2m"
+reset="\033[0m"
+green="\033[32m"
+yellow="\033[33m"
+red="\033[31m"
+
+# ── Parse arguments ───────────────────────────────────────────────────
+WI_ID=""
+WT_PATH=""
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --work-item-id|-id)  WI_ID="$2";  shift 2 ;;
+    --directory|-d)      WT_PATH="$2"; shift 2 ;;
+    -h|--help)
+      echo "Usage: begin [OPTIONS]"
+      echo ""
+      echo "Options:"
+      echo "  --work-item-id, -id <ID>   Work item ID (skips fuzzy picker)"
+      echo "  --directory, -d <PATH>      Worktree directory (default: CWD)"
+      echo "  -h, --help                  Show this help"
+      exit 0 ;;
+    *) echo -e "${red}Unknown option: $1${reset}"; exit 1 ;;
+  esac
+done
+
+# Default worktree to CWD
+if [ -z "$WT_PATH" ]; then
+  WT_PATH="$(pwd)"
+fi
+WT_PATH="$(cd "$WT_PATH" && pwd)"  # resolve to absolute path
+
+# Validate the directory is inside a git worktree
+if ! git -C "$WT_PATH" rev-parse --show-toplevel &>/dev/null; then
+  echo -e "${red}Error: ${WT_PATH} is not inside a git repository.${reset}"
+  exit 1
+fi
+WT_PATH="$(git -C "$WT_PATH" rev-parse --show-toplevel)"
+
+# ── 1. Fetch latest changes ──────────────────────────────────────────
+echo -e "${dim}Fetching latest changes…${reset}"
+git -C "$WT_PATH" fetch --all --quiet 2>/dev/null
+echo -e "${green}✓${reset} Fetched latest changes"
+
+# ── 2. Check for uncommitted changes ─────────────────────────────────
+if [ -n "$(git -C "$WT_PATH" status --porcelain)" ]; then
+  echo -e "${red}Error: ${WT_PATH} has uncommitted changes. Commit or stash them first.${reset}"
+  exit 1
+fi
+echo -e "${green}✓${reset} Worktree is clean: ${bold}${WT_PATH}${reset}"
+
+# ── 3. Select work item ──────────────────────────────────────────────
+if [ -z "$WI_ID" ]; then
+  echo -e "${dim}Querying active work items…${reset}"
+
+  work_items_json=$(az boards query \
+    --wiql "SELECT [System.Id], [System.Title], [System.State], [System.WorkItemType], [System.Description] \
+            FROM WorkItems \
+            WHERE [System.AssignedTo] = @Me \
+              AND [System.State] <> 'Closed' \
+              AND [System.State] <> 'Removed' \
+              AND [System.State] <> 'Done' \
+            ORDER BY [System.ChangedDate] DESC" \
+    -o json 2>/dev/null)
+
+  wi_count=$(echo "$work_items_json" | python3 -c "import json,sys; print(len(json.load(sys.stdin)))")
+  if [ "$wi_count" -eq 0 ]; then
+    echo -e "${red}No active work items found.${reset}"
+    exit 1
+  fi
+  echo -e "${green}✓${reset} Found ${wi_count} active work item(s)"
+
+  wi_lines=$(echo "$work_items_json" | python3 -c "
+import json, sys
+items = json.load(sys.stdin)
+for i in items:
+    f = i['fields']
+    wit  = f['System.WorkItemType']
+    wid  = f['System.Id']
+    state = f['System.State']
+    title = f['System.Title']
+    print(f'{wid}\t[{wit}] ({state}) {title}')
+")
+
+  selected_wi=$(echo "$wi_lines" | fzf \
+    --delimiter='\t' \
+    --with-nth=2 \
+    --header="Select a work item:" \
+    --height=~40% \
+    --layout=reverse \
+    --border \
+    --prompt="Work item > ")
+
+  if [ -z "$selected_wi" ]; then
+    echo -e "${red}No work item selected. Aborting.${reset}"
+    exit 1
+  fi
+
+  WI_ID=$(echo "$selected_wi" | cut -f1)
+fi
+
+echo -e "${green}✓${reset} Work item ${bold}#${WI_ID}${reset}"
+
+# ── 4. Get full work item details ────────────────────────────────────
+wi_detail=$(az boards work-item show --id "$WI_ID" -o json 2>/dev/null)
+
+WI_TYPE=$(echo "$wi_detail" | python3 -c "import json,sys; print(json.load(sys.stdin)['fields']['System.WorkItemType'])")
+WI_TITLE=$(echo "$wi_detail" | python3 -c "import json,sys; print(json.load(sys.stdin)['fields']['System.Title'])")
+WI_STATE=$(echo "$wi_detail" | python3 -c "import json,sys; print(json.load(sys.stdin)['fields']['System.State'])")
+WI_DESC=$(echo "$wi_detail" | python3 -c "
+import json, sys, html, re
+desc = json.load(sys.stdin)['fields'].get('System.Description', '(no description)')
+# Strip HTML tags and decode entities
+desc = re.sub(r'<[^>]+>', ' ', desc)
+desc = html.unescape(desc)
+desc = re.sub(r'\s+', ' ', desc).strip()
+print(desc)
+")
+WI_COMMENTS=$(az boards work-item show --id "$WI_ID" --expand relations -o json 2>/dev/null | python3 -c "
+import json, sys
+data = json.load(sys.stdin)
+relations = data.get('relations', None) or []
+comment_count = data['fields'].get('System.CommentCount', 0)
+print(f'{comment_count} comment(s)')
+" 2>/dev/null || echo "0 comments")
+
+# Map work item type to branch prefix
+BRANCH_TYPE=$(echo "$WI_TYPE" | python3 -c "
+import sys
+t = sys.stdin.read().strip().lower()
+mapping = {
+    'user story': 'story',
+    'techdebt':   'techdebt',
+    'bug':        'bugfix',
+    'task':       'task',
+    'feature':    'story',
+}
+print(mapping.get(t, t.replace(' ', '')))")
+
+# ── 5. Checkout master (detached HEAD if needed) ──────────────────────
+echo -e "${dim}Checking out master…${reset}"
+if git -C "$WT_PATH" checkout master 2>/dev/null; then
+  echo -e "${green}✓${reset} Checked out master"
+else
+  echo -e "${yellow}⚠${reset} master is checked out elsewhere, using detached HEAD"
+  master_sha=$(git -C "$WT_PATH" rev-parse origin/master)
+  git -C "$WT_PATH" checkout --detach "$master_sha" 2>/dev/null
+  echo -e "${green}✓${reset} Checked out master (detached) at ${master_sha:0:10}"
+fi
+
+# Pull latest on master if not detached
+if git -C "$WT_PATH" symbolic-ref HEAD 2>/dev/null | grep -q master; then
+  git -C "$WT_PATH" pull --ff-only --quiet 2>/dev/null || true
+fi
+
+# ── 6. Spawn Cursor agent ────────────────────────────────────────────
+echo ""
+echo -e "${bold}Launching Cursor agent…${reset}"
+echo -e "${dim}Work item: [${WI_TYPE}] #${WI_ID} — ${WI_TITLE}${reset}"
+echo ""
+
+AGENT_PROMPT="You are starting work on an Azure DevOps work item. Here is all the information:
+
+TYPE: ${WI_TYPE}
+ID: ${WI_ID}
+STATE: ${WI_STATE}
+TITLE: ${WI_TITLE}
+DESCRIPTION:
+${WI_DESC}
+
+Your task:
+1. Read and understand the work item above thoroughly.
+2. Explore the codebase to understand the project structure and identify which files are relevant to this work item. Use search, read files, and trace code paths as needed.
+3. Create a new git branch from the current HEAD. The branch name MUST follow this format exactly:
+   ${BRANCH_TYPE}${WI_ID}/<short-name>
+   where <short-name> is a brief lowercase hyphenated description of the work (e.g. '${BRANCH_TYPE}${WI_ID}/add-sms-auth-flow').
+4. Make a single empty commit (git commit --allow-empty) on this new branch. The commit message should contain:
+   - A summary of the work item and what it requires
+   - Your analysis of the codebase: which files/modules are involved
+   - Your implementation plan: the steps you would take to complete this work item
+   - A list of files you expect will need to be created or modified
+
+Do NOT make any code changes — only create the branch and the planning commit."
+
+cursor agent --workspace "$WT_PATH" --yolo "$AGENT_PROMPT"

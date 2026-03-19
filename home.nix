@@ -1,10 +1,99 @@
-{ pkgs, lib, secrets, ... }:
+{ config, pkgs, lib, secrets, ... }:
 
-{
+let
+  # Repo-local script; @azureOrg@ / @azureProject@ in ./scripts/az-dashboard.sh are filled from secrets.
+  az-dashboard-text =
+    builtins.replaceStrings [ "@azureOrg@" "@azureProject@" ] [
+      secrets.azure.org
+      secrets.azure.project
+    ] (builtins.readFile ./scripts/az-dashboard.sh);
+in {
   imports = [ ./db.nix ];
   home.username = secrets.username;
   home.homeDirectory = secrets.homeDirectory;
   home.stateVersion = "24.11";
+
+  xdg.enable = true;
+
+  home.sessionPath = [
+    "$HOME/.local/bin"
+  ];
+
+  home.sessionVariables = {
+    EDITOR = "nvim";
+    IDLEUSERDIR = "$HOME/.config/idlerc";
+    AWS_CONFIG_FILE = "$HOME/.config/aws/config";
+    AWS_SHARED_CREDENTIALS_FILE = "$HOME/.config/aws/credentials";
+    AZURE_CONFIG_DIR = "$HOME/.config/azure";
+    DOCKER_CONFIG = "$HOME/.config/docker";
+    NPM_CONFIG_USERCONFIG = "$HOME/.config/npm/npmrc";
+    NPM_CONFIG_CACHE = "$HOME/.cache/npm";
+    LESSHISTFILE = "$HOME/.local/state/less/history";
+    NODE_REPL_HISTORY = "$HOME/.local/state/node/repl_history";
+    PYTHONHISTFILE = "$HOME/.local/state/python/history";
+    TS_NODE_HISTORY = "$HOME/.local/state/ts-node/repl_history";
+    HISTFILE = "$HOME/.local/state/zsh/history";
+    ZSH_COMPDUMP = "$HOME/.cache/zsh/zcompdump-$HOST-$ZSH_VERSION";
+  };
+
+  home.activation.migrateHomeClutter = lib.hm.dag.entryAfter [ "writeBoundary" ] ''
+    move_dir_if_absent() {
+      local src="$1"
+      local dst="$2"
+
+      if [ -d "$src" ] && [ ! -e "$dst" ]; then
+        mkdir -p "$(dirname "$dst")"
+        mv "$src" "$dst"
+      fi
+    }
+
+    move_file_if_absent() {
+      local src="$1"
+      local dst="$2"
+
+      if [ -e "$src" ] && [ ! -e "$dst" ]; then
+        mkdir -p "$(dirname "$dst")"
+        mv "$src" "$dst"
+      fi
+    }
+
+    move_dir_if_absent "$HOME/.idlerc" "$HOME/.config/idlerc"
+    move_dir_if_absent "$HOME/.azure" "$HOME/.config/azure"
+    move_dir_if_absent "$HOME/.docker" "$HOME/.config/docker"
+    move_dir_if_absent "$HOME/.npm" "$HOME/.cache/npm"
+
+    mkdir -p \
+      "$HOME/.config/aws" \
+      "$HOME/.config/npm" \
+      "$HOME/.config/azure" \
+      "$HOME/.config/docker" \
+      "$HOME/.config/idlerc" \
+      "$HOME/.cache/npm" \
+      "$HOME/.cache/zsh" \
+      "$HOME/.local/state/less" \
+      "$HOME/.local/state/node" \
+      "$HOME/.local/state/python" \
+      "$HOME/.local/state/ts-node" \
+      "$HOME/.local/state/zsh" \
+      "$HOME/.local/share/bun"
+
+    move_file_if_absent "$HOME/.aws/config" "$HOME/.config/aws/config"
+    move_file_if_absent "$HOME/.aws/credentials" "$HOME/.config/aws/credentials"
+    move_file_if_absent "$HOME/.npmrc" "$HOME/.config/npm/npmrc"
+    move_file_if_absent "$HOME/.lesshst" "$HOME/.local/state/less/history"
+    move_file_if_absent "$HOME/.node_repl_history" "$HOME/.local/state/node/repl_history"
+    move_file_if_absent "$HOME/.python_history" "$HOME/.local/state/python/history"
+    move_file_if_absent "$HOME/.ts_node_repl_history" "$HOME/.local/state/ts-node/repl_history"
+    move_file_if_absent "$HOME/.zsh_history" "$HOME/.local/state/zsh/history"
+
+    if [ -L "$HOME/bin/begin" ]; then
+      rm -f "$HOME/bin/begin"
+    fi
+
+    rm -f "$HOME"/.zcompdump*
+    rmdir "$HOME/.aws" 2>/dev/null || true
+    rmdir "$HOME/bin" 2>/dev/null || true
+  '';
 
   home.packages = with pkgs; [
     git
@@ -17,6 +106,7 @@
   programs.zsh = {
     enable = true;
     enableCompletion = true;
+    dotDir = "${config.xdg.configHome}/zsh";
 
     oh-my-zsh = {
       enable = true;
@@ -25,17 +115,7 @@
     };
 
     envExtra = ''
-      export PATH="$HOME/bin:$PATH"
-      export PATH="$HOME/.local/bin:$PATH"
-      export PATH="$HOME/.qlot/bin:$PATH"
-      export PATH="$HOME/.antigravity/antigravity/bin:$PATH"
-      export EDITOR=nvim
-      export BUN_INSTALL="$HOME/.bun"
-      export PATH="$BUN_INSTALL/bin:$PATH"
-      export IDLEUSERDIR="$HOME/.config/idlerc"
-      export AWS_CONFIG_FILE="$HOME/.config/aws/config"
-      export AWS_SHARED_CREDENTIALS_FILE="$HOME/.config/aws/credentials"
-      export AZURE_CONFIG_DIR="$HOME/.config/azure"
+      mkdir -p "$HOME/.cache/zsh" "$HOME/.local/state/zsh"
     '';
 
     shellAliases = {
@@ -46,14 +126,14 @@
       eval "$(zoxide init zsh)"
 
       # bun completions
-      [ -s "$HOME/.bun/_bun" ] && source "$HOME/.bun/_bun"
+      [ -s "$BUN_INSTALL/_bun" ] && source "$BUN_INSTALL/_bun"
 
       # Secrets from macOS Keychain
       export YARN_NPM_AUTH_TOKEN="$(security find-generic-password -a '${secrets.username}' -s 'YARN_NPM_AUTH_TOKEN' -w 2>/dev/null)"
     '';
   };
 
-  home.file.".config/wezterm/wezterm.lua".text = ''
+  xdg.configFile."wezterm/wezterm.lua".text = ''
     local wezterm = require 'wezterm'
     local act = wezterm.action
     local config = wezterm.config_builder()
@@ -289,142 +369,12 @@ ${lib.concatMapStringsSep "\n" (ws:
     return config
   '';
 
-  home.file."bin/az-dashboard" = {
+  home.file.".local/bin/az-dashboard" = {
     executable = true;
-    text = ''
-      #!/usr/bin/env bash
-      set -euo pipefail
-
-      bold="\033[1m"
-      reset="\033[0m"
-      ORG="${secrets.azure.org}"
-      PROJECT="${secrets.azure.project}"
-      WI_BASE="''${ORG}/''${PROJECT}/_workitems/edit"
-
-      osc_link() {
-        # Usage: osc_link <url> <text> <width>
-        local url="$1" text="$2" width="$3"
-        local padded
-        padded=$(printf "%-''${width}s" "$text")
-        printf '\033]8;;%s\033\\%s\033]8;;\033\\' "$url" "$padded"
-      }
-
-      # ── Active Work Items ────────────────────────────────────────────────
-      echo -e "\n''${bold}Work Items (assigned to me, active)''${reset}\n"
-
-      wiql="SELECT [System.Id], [System.WorkItemType], [System.Title], [System.State], [System.AssignedTo] \
-      FROM WorkItems \
-      WHERE [System.AssignedTo] = @Me \
-        AND [System.State] <> 'Closed' \
-        AND [System.State] <> 'Removed' \
-        AND [System.State] <> 'Done' \
-      ORDER BY [System.WorkItemType] ASC, [System.State] ASC, [System.ChangedDate] DESC"
-
-      story_json=$(az boards query --wiql "$wiql" -o json 2>&1)
-
-      echo "$story_json" | python3 -c "
-      import json, sys
-      wi_base = ${"'"}''${WI_BASE}${"'"}
-      rows = json.load(sys.stdin)
-      if not rows:
-          print('  No active work items.')
-          sys.exit(0)
-
-      hdr = f\"{'ID':<10}{'Type':<15}{'State':<15}{'Title'}\"
-      print(hdr)
-      print('─' * len(hdr))
-      for r in rows:
-          f = r['fields']
-          wid   = f['System.Id']
-          wtype = f['System.WorkItemType']
-          state = f['System.State']
-          title = f['System.Title'][:60]
-          link  = f'{wi_base}/{wid}'
-          padded_id = str(wid).ljust(10)
-          linked_id = f'\033]8;;{link}\033\\\\{padded_id}\033]8;;\033\\\\'
-          print(f'{linked_id}{wtype:<15}{state:<15}{title}')
-      "
-
-      # ── Active Pull Requests ─────────────────────────────────────────────
-      echo -e "\n''${bold}Pull Requests (created by me or assigned to review)''${reset}\n"
-
-      pr_json=$(python3 -c "
-      import json, subprocess, sys
-
-      def get_prs(flag):
-          result = subprocess.run(
-              ['az', 'repos', 'pr', 'list', '--status', 'active', flag, 'me', '-o', 'json'],
-              capture_output=True, text=True
-          )
-          return json.loads(result.stdout) if result.returncode == 0 else []
-
-      def get_linked_stories(pr_id):
-          result = subprocess.run(
-              ['az', 'repos', 'pr', 'work-item', 'list', '--id', str(pr_id), '-o', 'json'],
-              capture_output=True, text=True
-          )
-          if result.returncode != 0:
-              return []
-          items = json.loads(result.stdout)
-          return [
-              str(wi['id']) for wi in items
-              if wi.get('fields', {}).get('System.WorkItemType') == 'User Story'
-          ]
-
-      created = get_prs('--creator')
-      reviewing = get_prs('--reviewer')
-
-      created_ids = {pr['pullRequestId'] for pr in created}
-      all_prs = created + [pr for pr in reviewing if pr['pullRequestId'] not in created_ids]
-
-      rows = []
-      for pr in all_prs:
-          stories = get_linked_stories(pr['pullRequestId'])
-          rows.append({
-              'id':      pr['pullRequestId'],
-              'role':    'Author' if pr['pullRequestId'] in created_ids else 'Reviewer',
-              'title':   pr['title'][:55],
-              'repo':    pr['repository']['name'],
-              'creator': pr['createdBy']['displayName'],
-              'date':    pr['creationDate'][:10],
-              'link':    f\"{pr['repository']['url'].split('/_apis/')[0]}/_git/{pr['repository']['name']}/pullrequest/{pr['pullRequestId']}\",
-              'stories': stories,
-          })
-
-      rows.sort(key=lambda r: r['date'], reverse=True)
-      print(json.dumps(rows))
-      ")
-
-      if [ "$(echo "$pr_json" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)))')" -eq 0 ]; then
-          echo "  No active pull requests."
-      else
-          echo "$pr_json" | python3 -c "
-      import json, sys
-      wi_base = ${"'"}''${WI_BASE}${"'"}
-      rows = json.load(sys.stdin)
-      hdr = f\"{'ID':<8}{'Role':<11}{'Created':<13}{'Creator':<25}{'Repository':<20}{'Story':<10}{'Title'}\"
-      print(hdr)
-      print('─' * len(hdr))
-      for r in rows:
-          padded_id = str(r['id']).ljust(8)
-          link_id = f'\033]8;;{r[\"link\"]}\033\\\\{padded_id}\033]8;;\033\\\\'
-          if r['stories']:
-              story_ids = []
-              for sid in r['stories']:
-                  padded_sid = sid.ljust(10) if len(r['stories']) == 1 else sid
-                  story_ids.append(f'\033]8;;{wi_base}/{sid}\033\\\\{padded_sid}\033]8;;\033\\\\')
-              story_col = ', '.join(story_ids)
-          else:
-              story_col = '—'.ljust(10)
-          print(f\"{link_id}{r['role']:<11}{r['date']:<13}{r['creator']:<25}{r['repo']:<20}{story_col}{r['title']}\")
-      "
-      fi
-
-      echo ""
-    '';
+    text = az-dashboard-text;
   };
 
-  home.file."bin/starship-workitem" = {
+  home.file.".local/bin/starship-workitem" = {
     executable = true;
     text = ''
       #!/usr/bin/env bash
@@ -433,6 +383,81 @@ ${lib.concatMapStringsSep "\n" (ws:
       [ -z "$id" ] && exit 1
       url="${secrets.azure.org}/${secrets.azure.project}/_workitems/edit/$id"
       printf '\033]8;;%s\033\\work item linked\033]8;;\033\\' "$url"
+    '';
+  };
+
+  home.file.".local/bin/begin" = {
+    executable = true;
+    source = "${./scripts/begin}";
+  };
+
+  home.file.".local/bin/agent-nvim" = {
+    executable = true;
+    source = "${./scripts/agent-nvim}";
+  };
+
+  home.file.".local/bin/nibble" = {
+    executable = true;
+    source = "${./scripts/agent-nvim}";
+  };
+
+  home.file.".local/bin/agent-buffer" = {
+    executable = true;
+    text = ''
+      #!/usr/bin/env bash
+      set -euo pipefail
+
+      editor="''${EDITOR:-nvim}"
+      read -r -a editor_cmd <<<"$editor"
+      editor_name="''${editor_cmd[0]##*/}"
+
+      tmpdir="''${TMPDIR:-/tmp}"
+      prompt_file="$(mktemp "$tmpdir/agent-buffer.XXXXXX.md")"
+      lua_file="$(mktemp "$tmpdir/agent-buffer.XXXXXX.lua")"
+
+      cleanup() {
+        rm -f "$prompt_file" "$lua_file"
+      }
+
+      trap cleanup EXIT
+
+      cat >"$lua_file" <<'EOF'
+      local prompt_file = vim.env.AGENT_BUFFER_FILE
+
+      vim.api.nvim_create_autocmd("BufWritePost", {
+        buffer = 0,
+        once = true,
+        callback = function()
+          local lines = vim.fn.readfile(prompt_file)
+          local text = table.concat(lines, "\n")
+
+          vim.cmd("botright 15split")
+          vim.fn.termopen({
+            "agent",
+            "--model",
+            "auto",
+            "--trust",
+            "--print",
+            "--yolo",
+            text,
+          })
+          vim.cmd("startinsert")
+        end,
+      })
+      EOF
+
+      case "$editor_name" in
+        nvim|vim|vi)
+          AGENT_BUFFER_FILE="$prompt_file" AGENT_BUFFER_LUA="$lua_file" \
+            "''${editor_cmd[@]}" -c "lua dofile(vim.env.AGENT_BUFFER_LUA)" "$prompt_file"
+          ;;
+        *)
+          "''${editor_cmd[@]}" "$prompt_file"
+          if [ -s "$prompt_file" ]; then
+            agent --model "auto" --trust --print --yolo "$(<"$prompt_file")"
+          fi
+          ;;
+      esac
     '';
   };
 
@@ -464,7 +489,7 @@ ${lib.concatMapStringsSep "\n" (ws:
     </plist>
   '';
 
-  home.file.".config/karabiner/karabiner.json".text = builtins.toJSON {
+  xdg.configFile."karabiner/karabiner.json".text = builtins.toJSON {
     global = {
       ask_for_confirmation_before_quitting = true;
       check_for_updates_on_startup = false;
@@ -578,11 +603,13 @@ ${lib.concatMapStringsSep "\n" (ws:
 
       custom = {
         rebuild_age_red = {
+          shell = [ "${pkgs.bash}/bin/bash" "--noprofile" "--norc" "-c" ];
           when = "test $(( ($(date +%s) - $(stat -f %m /nix/var/nix/profiles/system)) / 86400 )) -ge 2";
           command = "echo ↻$(( ($(date +%s) - $(stat -f %m /nix/var/nix/profiles/system)) / 86400 ))d";
           format = " [$output](red)";
         };
         rebuild_age_yellow = {
+          shell = [ "${pkgs.bash}/bin/bash" "--noprofile" "--norc" "-c" ];
           when = "test $(( ($(date +%s) - $(stat -f %m /nix/var/nix/profiles/system)) / 86400 )) -eq 1";
           command = "echo ↻$(( ($(date +%s) - $(stat -f %m /nix/var/nix/profiles/system)) / 86400 ))d";
           format = " [$output](yellow)";

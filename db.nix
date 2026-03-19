@@ -43,6 +43,52 @@ let
       };
     }
 
+    # Version 2: Workspace ↔ git branch/worktree ↔ Azure work item ↔ PRs
+    #
+    # `projects` rows are the configured workspaces (name + filesystem path). New
+    # columns cache the git branch at that path, a shared git identity for
+    # worktrees (`git_common_dir` from `git rev-parse --git-common-dir`), and the
+    # linked Azure Boards work item. `azure_pull_requests` stores PRs for a
+    # workspace (typically where `source_branch` matches `tracked_git_branch`).
+    {
+      projects = {
+        columns = [
+          { name = "id";                     type = "INTEGER PRIMARY KEY AUTOINCREMENT"; }
+          { name = "name";                   type = "TEXT NOT NULL"; }
+          { name = "path";                   type = "TEXT NOT NULL UNIQUE"; }
+          { name = "created_at";            type = "TEXT NOT NULL DEFAULT (datetime('now'))"; }
+          { name = "tracked_git_branch";    type = "TEXT"; }
+          { name = "git_common_dir";        type = "TEXT"; }
+          { name = "azure_work_item_id";    type = "INTEGER"; }
+          { name = "azure_work_item_state"; type = "TEXT"; }
+        ];
+      };
+
+      tasks = {
+        columns = [
+          { name = "id";         type = "INTEGER PRIMARY KEY AUTOINCREMENT"; }
+          { name = "project_id"; type = "INTEGER NOT NULL REFERENCES projects(id)"; }
+          { name = "title";      type = "TEXT NOT NULL"; }
+          { name = "status";     type = "TEXT NOT NULL DEFAULT 'todo'"; }
+          { name = "created_at"; type = "TEXT NOT NULL DEFAULT (datetime('now'))"; }
+        ];
+      };
+
+      azure_pull_requests = {
+        columns = [
+          { name = "id";              type = "INTEGER PRIMARY KEY AUTOINCREMENT"; }
+          { name = "project_id";      type = "INTEGER NOT NULL REFERENCES projects(id)"; }
+          { name = "azure_pr_id";     type = "INTEGER NOT NULL"; }
+          { name = "source_branch";   type = "TEXT NOT NULL"; }
+          { name = "state";           type = "TEXT NOT NULL"; }
+          { name = "title";           type = "TEXT"; }
+          { name = "url";             type = "TEXT"; }
+          { name = "created_at";      type = "TEXT NOT NULL DEFAULT (datetime('now'))"; }
+          { name = "updated_at";      type = "TEXT NOT NULL DEFAULT (datetime('now'))"; }
+        ];
+      };
+    }
+
   ];
 
   # ---------------------------------------------------------------------------
@@ -84,6 +130,8 @@ let
   '';
 
 in {
+  home.sessionVariables.WORK_DB = dbPath;
+
   home.activation.migrateTrackerDb = lib.hm.dag.entryAfter [ "writeBoundary" ] ''
     ${migrationScript}
   '';
